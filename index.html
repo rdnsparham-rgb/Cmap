@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CMAP - ایران</title>
+<style>
+  html, body {
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    height:100%;
+    background:#e0e0e0;
+    font-family:sans-serif;
+  }
+  #map {
+    width:100%;
+    height:100%;
+    cursor: grab;
+  }
+  #map.dragging {
+    cursor: grabbing;
+  }
+  #controls {
+    position:absolute;
+    top:10px;
+    left:10px;
+    background:rgba(255,255,255,0.8);
+    padding:8px;
+    border-radius:4px;
+  }
+  #controls button {
+    margin:2px;
+  }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="controls">
+  <button id="resetBtn">بازگشت به مرکز</button>
+  <span>کلیک روی دو نقطه برای مسیر</span>
+</div>
+
+<script>
+// ===== داده ساده شده ایران =====
+// مختصات بسیار ساده‌شده برای مثال
+const iranGeo = {
+  "type":"FeatureCollection",
+  "features":[
+    {
+      "type":"Feature",
+      "properties":{ "type": "land" },
+      "geometry":{
+        "type":"Polygon",
+        "coordinates":[[
+          [44,25],[63,25],[63,40],[44,40],[44,25]
+        ]]
+      }
+    },
+    {
+      "type":"Feature",
+      "properties":{ "type": "water" },
+      "geometry":{
+        "type":"Polygon",
+        "coordinates":[[
+          [50,30],[52,30],[52,32],[50,32],[50,30]
+        ]]
+      }
+    },
+    {
+      "type":"Feature",
+      "properties":{ "type": "park" },
+      "geometry":{
+        "type":"Polygon",
+        "coordinates":[[
+          [46,36],[48,36],[48,38],[46,38],[46,36]
+        ]]
+      }
+    },
+    {
+      "type":"Feature",
+      "properties":{ "type": "road" },
+      "geometry":{
+        "type":"LineString",
+        "coordinates":[
+          [45,27],[50,35],[55,30],[60,38]
+        ]
+      }
+    }
+  ]
+};
+
+// ===== تنظیمات نقشه =====
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+let width, height;
+function resize(){
+  width=canvas.clientWidth;
+  height=canvas.clientHeight;
+  canvas.width=width;
+  canvas.height=height;
+  draw();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// حالت drag/zoom
+let offsetX=0, offsetY=0, scale=1, dragging=false, dragStart=null;
+
+canvas.addEventListener('mousedown',(e)=>{
+  dragging=true;
+  dragStart={x:e.clientX-offsetX, y:e.clientY-offsetY};
+  canvas.classList.add('dragging');
+});
+canvas.addEventListener('mousemove',(e)=>{
+  if(!dragging) return;
+  offsetX=e.clientX-dragStart.x;
+  offsetY=e.clientY-dragStart.y;
+  draw();
+});
+canvas.addEventListener('mouseup',()=>{dragging=false; canvas.classList.remove('dragging');});
+canvas.addEventListener('mouseleave',()=>{dragging=false; canvas.classList.remove('dragging');});
+canvas.addEventListener('wheel',(e)=>{
+  e.preventDefault();
+  const delta = e.deltaY>0?0.9:1.1;
+  const mx = e.clientX-offsetX;
+  const my = e.clientY-offsetY;
+  offsetX-=mx*(delta-1);
+  offsetY-=my*(delta-1);
+  scale*=delta;
+  draw();
+});
+
+// نقاط مسیر
+let routePts = [];
+
+canvas.addEventListener('click',(e)=>{
+  const mx = (e.clientX-offsetX)/scale;
+  const my = (e.clientY-offsetY)/scale;
+  routePts.push({x:mx,y:my});
+  if(routePts.length>2) routePts.shift();
+  draw();
+});
+
+document.getElementById('resetBtn').addEventListener('click',()=>{
+  offsetX=0; offsetY=0; scale=1;
+  draw();
+});
+
+// تبدیل مختصات جغرافیایی به پیکسل ساده
+function geoToPixel(lon,lat){
+  return {x:(lon-44)*width/19, y:(40-lat)*height/15};
+}
+
+// رسم نقشه
+function draw(){
+  ctx.clearRect(0,0,width,height);
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(scale, scale);
+
+  iranGeo.features.forEach(f=>{
+    if(f.geometry.type==="Polygon"){
+      ctx.beginPath();
+      f.geometry.coordinates[0].forEach((pt,i)=>{
+        const p=geoToPixel(pt[0],pt[1]);
+        if(i===0) ctx.moveTo(p.x,p.y);
+        else ctx.lineTo(p.x,p.y);
+      });
+      ctx.closePath();
+      if(f.properties.type==="land") ctx.fillStyle="#f0e68c";   // زمین
+      else if(f.properties.type==="water") ctx.fillStyle="#87cefa"; // آب
+      else if(f.properties.type==="park") ctx.fillStyle="#3cb371"; // پارک
+      ctx.fill();
+      ctx.strokeStyle="#555";
+      ctx.lineWidth=2/scale;
+      ctx.stroke();
+    } else if(f.geometry.type==="LineString"){
+      ctx.beginPath();
+      f.geometry.coordinates.forEach((pt,i)=>{
+        const p=geoToPixel(pt[0],pt[1]);
+        if(i===0) ctx.moveTo(p.x,p.y);
+        else ctx.lineTo(p.x,p.y);
+      });
+      ctx.strokeStyle="#a52a2a"; // رنگ جاده
+      ctx.lineWidth=3/scale;
+      ctx.stroke();
+    }
+  });
+
+  // رسم مسیر کاربر
+  if(routePts.length===2){
+    ctx.beginPath();
+    ctx.moveTo(routePts[0].x,routePts[0].y);
+    ctx.lineTo(routePts[1].x,routePts[1].y);
+    ctx.strokeStyle="red";
+    ctx.lineWidth=4/scale;
+    ctx.stroke();
+  }
+
+  // رسم نقاط
+  routePts.forEach(pt=>{
+    ctx.beginPath();
+    ctx.arc(pt.x,pt.y,6/scale,0,2*Math.PI);
+    ctx.fillStyle="green";
+    ctx.fill();
+    ctx.strokeStyle="black";
+    ctx.lineWidth=1/scale;
+    ctx.stroke();
+  });
+
+  ctx.restore();
+}
+</script>
+</body>
+</html>
