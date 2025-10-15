@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CMAP — نقشه ایران</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #e0e0e0;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    #map.dragging {
+      cursor: grabbing;
+    }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255,255,255,0.8);
+      padding: 8px;
+      border-radius: 4px;
+    }
+    #controls button {
+      margin: 2px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="map"></canvas>
+  <div id="controls">
+    <button id="resetBtn">بازگشت به مرکز</button>
+    <span>قدم: کلیک روی دو نقطه برای مسیر</span>
+  </div>
+
+  <script>
+  // ===== داده GeoJSON ساده‌شده برای ایران (مرز کشور) =====
+  const iranGeo = {
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [44.0, 25.0],
+          [63.0, 25.0],
+          [63.0, 40.0],
+          [44.0, 40.0],
+          [44.0, 25.0]
+        ]
+      ]
+    }
+  };
+  // این فقط یک باکس ساده است؛ باید با GeoJSON دقیق‌تر جایگزین بشه.
+
+  // ===== پیکربندی نقشه =====
+  const canvas = document.getElementById('map');
+  const ctx = canvas.getContext('2d');
+  let width, height;
+  function resize() {
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = width;
+    canvas.height = height;
+    draw();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // حالت pan/zoom
+  let offsetX = 0, offsetY = 0;
+  let scale = 1;
+  let dragging = false;
+  let dragStart = null;
+
+  canvas.addEventListener('mousedown', (e) => {
+    dragging = true;
+    dragStart = { x: e.clientX - offsetX, y: e.clientY - offsetY };
+    canvas.classList.add('dragging');
+  });
+  canvas.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    offsetX = e.clientX - dragStart.x;
+    offsetY = e.clientY - dragStart.y;
+    draw();
+  });
+  canvas.addEventListener('mouseup', () => {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    // زوم نسبت به نقطه موس
+    const mx = e.clientX - offsetX;
+    const my = e.clientY - offsetY;
+    offsetX -= mx * (delta - 1);
+    offsetY -= my * (delta - 1);
+    scale *= delta;
+    draw();
+  });
+
+  // نقاط مسیر‌یابی
+  let routePts = [];
+
+  canvas.addEventListener('click', (e) => {
+    // نقطه را به مختصات نقشه تبدیل کن
+    const mx = (e.clientX - offsetX) / scale;
+    const my = (e.clientY - offsetY) / scale;
+    routePts.push({ x: mx, y: my });
+    if (routePts.length > 2) {
+      routePts.shift(); // فقط دو نقطه نگه دار
+    }
+    draw();
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    offsetX = 0; offsetY = 0; scale = 1;
+    draw();
+  });
+
+  function draw() {
+    // پس‌زمینه (زمین)
+    ctx.fillStyle = '#f0f0d0';  // رنگ زمین
+    ctx.fillRect(0, 0, width, height);
+
+    // ترسیم مرز ایران
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
+
+    ctx.beginPath();
+    const coords = iranGeo.geometry.coordinates[0];
+    coords.forEach((pt, i) => {
+      const x = (pt[0] - 44) * 200; // تبدیل ساده
+      const y = (40 - pt[1]) * 200;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = '#d0e8ff'; // رنگ آب/دریا داخل مرز
+    ctx.fill();
+    ctx.strokeStyle = '#555555';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // اگر دو نقطه انتخاب شده باشن، رسم مسیر ساده
+    if (routePts.length === 2) {
+      ctx.beginPath();
+      ctx.moveTo(routePts[0].x, routePts[0].y);
+      ctx.lineTo(routePts[1].x, routePts[1].y);
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 3 / scale;
+      ctx.stroke();
+    }
+
+    // رسم نقاط
+    routePts.forEach(pt => {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 5 / scale, 0, Math.PI * 2);
+      ctx.fillStyle = 'green';
+      ctx.fill();
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = 1 / scale;
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  }
+
+  </script>
+</body>
+</html>
