@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>جستجوگر شخصی</title>
+<style>
+body {
+  font-family:sans-serif;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  margin:0;
+  padding:20px;
+  background:#f0f2f5;
+}
+h1 {margin-top:20px;}
+#searchBox {
+  margin-top:20px;
+  display:flex;
+  gap:10px;
+}
+input {padding:10px; width:300px; border-radius:6px; border:1px solid #ccc;}
+button {padding:10px 15px; border:none; border-radius:6px; background:#4caf50; color:white; cursor:pointer;}
+#results {
+  margin-top:30px;
+  width:90%;
+  max-width:800px;
+  background:white;
+  border-radius:6px;
+  padding:15px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.1);
+}
+.result-item {
+  padding:8px 6px;
+  border-bottom:1px solid #eee;
+  cursor:pointer;
+  color:#333;
+}
+.result-item:hover {background:#f1f1f1;}
+</style>
+</head>
+<body>
+
+<h1>جستجوگر شخصی</h1>
+<div id="searchBox">
+  <input type="text" id="query" placeholder="جستجو یا آدرس داخلی...">
+  <button onclick="doSearch()">جستجو</button>
+</div>
+
+<div id="results"></div>
+
+<script>
+// داده‌های داخلی سایت (می‌تونی هر چیزی اضافه کنی)
+const data = [
+  {title:"صفحه اصلی", url:"home.html"},
+  {title:"درباره ما", url:"about.html"},
+  {title:"تماس با ما", url:"contact.html"},
+  {title:"محصول A", url:"productA.html"},
+  {title:"محصول B", url:"productB.html"},
+];
+
+// جستجو
+function doSearch(){
+  const q = document.getElementById('query').value.trim().toLowerCase();
+  const resultsDiv = document.getElementById('results');
+  resultsDiv.innerHTML = "";
+
+  if(!q) return;
+
+  // بررسی URL داخلی
+  const found = data.filter(item => item.title.toLowerCase().includes(q) || item.url.toLowerCase().includes(q));
+
+  if(found.length === 0){
+    resultsDiv.innerHTML = "<p>نتیجه‌ای پیدا نشد!</p>";
+    return;
+  }
+
+  found.forEach(item=>{
+    const div = document.createElement('div');
+    div.className = "result-item";
+    div.textContent = item.title + " (" + item.url + ")";
+    div.onclick = ()=>{ openPage(item.url); };
+    resultsDiv.appendChild(div);
+  });
+}
+
+// باز کردن داخل سایت
+function openPage(url){
+  // مثلا iframe یا جایگاه محتوا
+  const resultsDiv = document.getElementById('results');
+  resultsDiv.innerHTML = `<iframe src="${url}" style="width:100%;height:400px;border:none;"></iframe>`;
+}
+</script>
+
+</body>
+</html>
