@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="fa">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>موتور جستجوی داخلی</title>
+
+<style>
+  :root{--bg:#fff;--muted:#6b7280;--accent:#1e40af}
+  body{font-family: Vazirmatn, system-ui, -apple-system, "Segoe UI", Roboto; margin:0; background:var(--bg); color:#0b1220}
+  .center{max-width:900px;margin:40px auto;padding:0 18px}
+  .searchBox{display:flex;flex-direction:column;align-items:center;gap:12px}
+  input[type="text"]{width:min(720px,92%);padding:14px 18px;border-radius:999px;border:1px solid #e5e7eb;font-size:18px;box-shadow:0 4px 18px rgba(2,6,23,0.06)}
+  .buttons{display:flex;gap:10px}
+  button{padding:8px 12px;border-radius:8px;border:none;cursor:pointer;background:var(--accent);color:#fff}
+  #results{margin-top:20px}
+  .result{padding:12px 10px;border-bottom:1px solid #f1f5f9}
+  .result .title{font-weight:600;color:#1e3a8a;cursor:pointer}
+  .result .snippet{color:var(--muted);margin-top:6px;font-size:14px}
+  iframe{width:100%;height:520px;border:1px solid #e6eef8;border-radius:8px;margin-top:18px;display:none}
+  .admin{margin-top:26px;padding:12px;border-radius:10px;background:#f8fafc;border:1px solid #eef2ff}
+  label{display:block;font-size:13px;color:var(--muted);margin-top:8px}
+  input.admin-input{width:100%;padding:8px;border-radius:6px;border:1px solid #e6eef8}
+  .small{font-size:13px;color:var(--muted)}
+  .flex{display:flex;gap:10px;align-items:center}
+  @media (max-width:640px){ input[type="text"]{font-size:16px} iframe{height:420px} }
+</style>
+
+</head>
+<body>
+  <div class="center">
+    <div class="searchBox" role="search" aria-label="جستجو">
+      <input id="query" type="text" placeholder="چی میخوای؟ (نام سایت، متن، یا آدرس کامل را وارد کن)" />
+      <div class="buttons">
+        <button id="searchBtn">جستجو</button>
+        <button id="clearBtn" style="background:#6b7280">پاک کردن</button>
+      </div>
+      <div class="small">نکته: اگر آدرس کامل وارد کنی (http:// یا https://) داخل صفحه باز خواهد شد.</div>
+    </div>
+
+    <div id="results" role="list"></div>
+
+    <iframe id="viewer" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+
+    <!-- Admin: افزودن رکورد جدید (ذخیره در localStorage و امکان دانلود JSON برای آپلود در ریپو) -->
+    <div class="admin" aria-label="پنل مدیریت">
+      <strong>پنل مدیریت (افزودن رکورد)</strong>
+      <div style="margin-top:8px" class="flex">
+        <input id="admTitle" class="admin-input" placeholder="عنوان (مثلاً: آپارات)" />
+        <input id="admUrl" class="admin-input" placeholder="url یا مسیر داخلی (مثلاً: https://example.com یا about.html)" />
+      </div>
+      <label>توضیح / snippet</label>
+      <input id="admSnippet" class="admin-input" placeholder="توضیح کوتاه برای نمایش در نتایج" />
+      <div style="margin-top:8px" class="flex">
+        <button id="addBtn" style="background:#059669">افزودن به local</button>
+        <button id="exportBtn" style="background:#2563eb">دانلود JSON برای آپلود</button>
+        <button id="resetLocal" style="background:#ef4444">پاک کردن local</button>
+      </div>
+      <div class="small" style="margin-top:8px">
+        توضیح: رکوردهای افزوده‌شده در مرورگر ذخیره می‌شوند (localStorage). برای اینکه دیتابیس دائمی شود، فایل `data.json` ریپو را با خروجی دانلودشده جایگزین کن (Upload به GitHub).
+      </div>
+    </div>
+  </div>
+
+<script>
+/* === تنظیمات === */
+const DATA_PATH = 'data.json'; // مسیر data.json در ریپو
+const STORAGE_KEY = 'my_local_db_entries_v1';
+
+/* بارگذاری اولیه: data.json + localStorage */
+let baseData = [];      // از data.json
+let localData = [];     // از localStorage
+let dataset = [];       // ترکیب برای ایندکس
+
+// We'll use FlexSearch if available (we include a small inlined search fallback if not)
+// For simplicity در این فایل از یک ایندکس ساده JS استفاده می‌کنیم (فیلتر رشته‌ای سریع).
+// اگر دیتابیس بزرگ شد پیشنهاد می‌کنم FlexSearch یا Lunr.js را اضافه کنی.
+
+async function loadBaseData(){
+  try {
+    const r = await fetch(DATA_PATH + '?_=' + Date.now());
+    if(!r.ok) throw new Error('فایل data.json پیدا نشد یا دسترسی نیست');
+    baseData = await r.json();
+  } catch(e){
+    console.warn('خطا در بارگذاری data.json:', e);
+    baseData = [];
+  }
+  const ls = localStorage.getItem(STORAGE_KEY);
+  localData = ls ? JSON.parse(ls) : [];
+  dataset = baseData.concat(localData);
+}
+
+function saveLocal(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(localData));
+  dataset = baseData.concat(localData);
+}
+
+/* UI helpers */
+const resultsDiv = document.getElementById('results');
+const iframe = document.getElementById('viewer');
+const qInput = document.getElementById('query');
+
+function showResults(items){
+  resultsDiv.innerHTML = '';
+  iframe.style.display = 'none';
+  if(!items.length){
+    resultsDiv.innerHTML = '<div class="small">نتیجه‌ای پیدا نشد.</div>';
+    return;
+  }
+  items.forEach(it=>{
+    const el = document.createElement('div');
+    el.className = 'result';
+    el.innerHTML = `<div class="title" data-url="${escapeHtml(it.url)}">${escapeHtml(it.title)}</div>
+                    <div class="snippet">${escapeHtml(it.snippet || '')}</div>
+                    <div class="small" style="margin-top:6px;color:#374151">${escapeHtml(it.url)}</div>`;
+    // کلیک روی عنوان: باز کردن در iframe یا نمایش داخلی
+    el.querySelector('.title').addEventListener('click', (ev)=>{
+      openUrl(it.url);
+    });
+    resultsDiv.appendChild(el);
+  });
+}
+
+function openUrl(url){
+  if(!url) return;
+  // اگر url با http/https شروع میشه مستقیم باز کن
+  if(url.startsWith('http://') || url.startsWith('https://')){
+    iframe.src = url;
+    iframe.style.display = 'block';
+    window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+  } else {
+    // مسیر داخلی (فایل HTML در همان ریپو)
+    iframe.src = url;
+    iframe.style.display = 'block';
+    window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+  }
+}
+
+/* ساده‌ترین موتور جستجو — ترکیبی از امتیازدهی بر اساس مطابقت */
+function search(query){
+  query = (query||'').trim().toLowerCase();
+  if(!query) return [];
+  // اگر آدرس کامل هست مستقیم باز کن
+  if(query.startsWith('http://') || query.startsWith('https://')) {
+    return [{title: query, url: query, snippet: 'آدرس وارد شده'}];
+  }
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const results = [];
+  for(const item of dataset){
+    const hay = ((item.title||'') + ' ' + (item.snippet||'') + ' ' + (item.url||'')).toLowerCase();
+    let score = 0;
+    for(const t of tokens){
+      if(hay.includes(t)) score += 10;
+      // امتیاز بیشتر اگر شروع عنوان با کلمه
+      if((item.title||'').toLowerCase().startsWith(t)) score += 5;
+    }
+    // طول عنوان کوتاهتر و مطابقت نزدیکتر بهتر
+    if(score>0) results.push({...item, score});
+  }
+  // مرتب‌سازی بر اساس امتیاز
+  results.sort((a,b)=>b.score - a.score);
+  return results;
+}
+
+/* ایونت‌های UI */
+document.getElementById('searchBtn').addEventListener('click', async ()=>{
+  await ensureLoaded();
+  const q = qInput.value;
+  const items = search(q);
+  // اگر فقط یک نتیجه و آدرس کامل بود، باز کن
+  if(items.length === 1 && (q.startsWith('http://') || q.startsWith('https://'))) {
+    openUrl(items[0].url);
+    return;
+  }
+  showResults(items);
+});
+
+qInput.addEventListener('keydown', async (e)=>{
+  if(e.key === 'Enter') {
+    document.getElementById('searchBtn').click();
+  }
+});
+
+// clear
+document.getElementById('clearBtn').addEventListener('click', ()=>{
+  qInput.value = '';
+  resultsDiv.innerHTML = '';
+  iframe.style.display = 'none';
+});
+
+/* پنل ادمین */
+document.getElementById('addBtn').addEventListener('click', ()=>{
+  const t = document.getElementById('admTitle').value.trim();
+  const u = document.getElementById('admUrl').value.trim();
+  const s = document.getElementById('admSnippet').value.trim();
+  if(!t || !u) { alert('عنوان و آدرس لازم است'); return; }
+  const id = 'l-' + Date.now();
+  const rec = {id, title: t, url: u, snippet: s};
+  localData.unshift(rec);
+  saveLocal();
+  alert('رکورد به local اضافه شد. برای اینکه دائمی شود "دانلود JSON" را بزن و فایل را در ریپو جایگزین کن.');
+  document.getElementById('admTitle').value = '';
+  document.getElementById('admUrl').value = '';
+  document.getElementById('admSnippet').value = '';
+});
+
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  // خروجی ترکیبی: baseData + localData
+  const out = baseData.concat(localData);
+  const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'data.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('resetLocal').addEventListener('click', ()=>{
+  if(confirm('آیا مطمئنی رکوردهای محلی پاک شوند؟')) {
+    localData = [];
+    saveLocal();
+    alert('پاک شد');
+  }
+});
+
+/* بارگذاری دیتا قبل از جستجو */
+let loaded = false;
+async function ensureLoaded(){
+  if(loaded) return;
+  await loadBaseData();
+  loaded = true;
+}
+
+/* سطحی: بار اول داده را بارگذاری کن */
+ensureLoaded();
+
+/* کمک تابع برای جلوگیری از XSS در نمایش */
+function escapeHtml(s){
+  if(!s) return '';
+  return String(s).replace(/[&<>"']/g, function(m){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
+  });
+}
+
+</script>
+
+</body>
+</html>
