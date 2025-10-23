@@ -1,158 +1,151 @@
 #!/usr/bin/env bash
-# create_mtproxy_configfars.sh
-# خودکار: نصب mtprotoproxy (در صورت نیاز)، تولید secret، اجرا در پس‌زمینه،
-# تست پورت و تولید لینک کانفیگ همراه با برچسب اسپانسر @configfars
-#
-# اجرا:
-# chmod +x create_mtproxy_configfars.sh
-# ./create_mtproxy_configfars.sh
-#
-# پیش‌فرض پورت: 8443 (اگر خواستی پورت را به عنوان آرگومان اول بده: ./script 443)
-
+# P_auto.sh - Auto install, patch and run mtprotoproxy (Termux-ready)
+# Usage: chmod +x P_auto.sh && ./P_auto.sh
 set -euo pipefail
 
+# Config
+IP_PUBLIC="188.210.170.57"
+PORT="${1:-8443}"
 SPONSOR="@configfars"
-DEFAULT_PORT=8443
-PORT="${1:-$DEFAULT_PORT}"
+LOGFILE="mtproxy_${PORT}.log"
+OUTFILE="mtproxy_${IP_PUBLIC}_${PORT}_configfars.txt"
 
-# چک نیازمندی‌ها
-REQUIRED=(python3 pip3 openssl curl)
-MISSING=()
-for c in "${REQUIRED[@]}"; do
-  if ! command -v "$c" >/dev/null 2>&1; then
-    MISSING+=("$c")
-  fi
-done
+# Ensure user-local bin in PATH (pip --user installs here)
+export PATH="$HOME/.local/bin:$PATH"
 
-if [ ${#MISSING[@]} -ne 0 ]; then
-  echo "خطا: این بسته‌ها نصب نیستند: ${MISSING[*]}"
-  echo "در ترموکس سعی کن: pkg install python openssl curl -y"
-  echo "در دبیان/اوبونتو: sudo apt update && sudo apt install python3 python3-pip openssl curl -y"
-  exit 1
-fi
-
-# نصب mtprotoproxy در صورت نیاز (در --user نصب می‌کنیم)
-if ! python3 -c "import mtprotoproxy" >/dev/null 2>&1; then
-  echo "[*] نصب پکیج mtprotoproxy با pip..."
-  # سعی کن pip3 نصب باشه
-  if ! pip3 install --user mtprotoproxy; then
-    echo "نصب mtprotoproxy با خطا روبه‌رو شد. مطمئن شو شبکه و pip درست کار می‌کنند."
-    exit 1
-  fi
-fi
-
-# تولید secret (16 بایت -> 32 hex)
-SECRET_HEX=$(openssl rand -hex 16)
-echo "[*] secret تولید شد: $SECRET_HEX"
-
-# پیدا کردن آی‌پی عمومی
-IP_PUBLIC=$(curl -s https://api.ipify.org || true)
-if [ -z "$IP_PUBLIC" ]; then
-  echo "هشدار: نتوانستم آی‌پی عمومی را از api.ipify.org بگیرم."
-  echo "لطفاً آی‌پی سرور را دستی وارد کن یا بررسی اتصال اینترنت کن."
-  read -rp "اگر می‌خواهی آی‌پی را دستی وارد کنی بنویس، در غیر اینصورت Enter بزن: " manual_ip
-  if [ -n "$manual_ip" ]; then
-    IP_PUBLIC="$manual_ip"
-  else
-    echo "آی‌پی مشخص نیست؛ خروج."
-    exit 1
-  fi
-fi
-
-# بررسی اینکه آیا پورت موردنظر در دسترس است (قبل اجرا)
-echo "[*] بررسی در دسترس بودن پورت $PORT (bind test)..."
-# اگر قبلاً سرویسی به پورت متصل است خطا می‌دهیم
-if ss -tuln 2>/dev/null | grep -qE "[:.]${PORT}\s"; then
-  echo "خطا: پورت $PORT قبلا توسط سرویس دیگری استفاده می‌شود. لطفاً پورت دیگری انتخاب کن."
-  exit 1
-fi
-
-# اجرای mtprotoproxy در پس‌زمینه
-# تلاش برای استفاده از screen یا nohup
-RUN_CMD="python3 -m mtprotoproxy.mtprotoproxy --port ${PORT} --secret ${SECRET_HEX}"
-echo "[*] اجرای پروکسی: $RUN_CMD"
-
-# اگر screen نصب است از آن استفاده کن تا قابلیت مانیتور داشته باشی
-if command -v screen >/dev/null 2>&1; then
-  screen -dmS mtproxy_parham bash -c "$RUN_CMD > mtproxy_${PORT}.log 2>&1"
+# Install system packages (Termux-friendly). If already installed, pkg will skip.
+if command -v pkg >/dev/null 2>&1; then
+  echo "[*] Installing required packages (termux): python curl openssl - if not present"
+  pkg update -y >/dev/null 2>&1 || true
+  pkg install -y python curl openssl >/dev/null 2>&1 || true
 else
-  nohup bash -c "$RUN_CMD" > mtproxy_${PORT}.log 2>&1 &
+  echo "[*] Non-Termux environment detected. Make sure python3, pip3 and curl are installed."
 fi
 
-sleep 1
-# بررسی اجرا شدن
-PID=$(pgrep -f "mtprotoproxy.*--port ${PORT}" || true)
-if [ -z "$PID" ]; then
-  echo "خطا: سرویس mtprotoproxy اجرا نشد. لاگ را ببین: mtproxy_${PORT}.log"
-  tail -n 50 mtproxy_${PORT}.log || true
+# Ensure pip3 available
+if ! command -v pip3 >/dev/null 2>&1; then
+  echo "ERROR: pip3 not found. Install pip3 and re-run."
   exit 1
 fi
 
-echo "[*] سرویس اجرا شد (PID: $PID). لاگ: mtproxy_${PORT}.log"
+# Install mtprotoproxy + pycryptodome to user site if missing
+if ! python3 -c "import mtprotoproxy" >/dev/null 2>&1; then
+  echo "[*] Installing mtprotoproxy and pycryptodome (pip --user)..."
+  pip3 install --user mtprotoproxy pycryptodome
+else
+  echo "[*] mtprotoproxy already installed in user site-packages"
+fi
 
-# تست دسترسی از بیرون (nc یا curl تست ساده TCP)
-# اگر nc موجود باشد از آن استفاده می‌کنیم
+MT_BIN="$HOME/.local/bin/mtprotoproxy"
+
+# If binary exists, backup and patch to be compatible with Python 3.12's asyncio (remove loop=loop usage)
+if [ -f "$MT_BIN" ]; then
+  echo "[*] Found $MT_BIN — creating backup and applying compatibility patch..."
+  cp -a "$MT_BIN" "${MT_BIN}.bak" || { echo "ERROR: could not create backup ${MT_BIN}.bak"; exit 1; }
+
+  # Run a small python patcher that edits the file in-place
+  python3 - "$MT_BIN" <<'PY'
+import sys, re
+fn = sys.argv[1]
+text = open(fn, "r", encoding="utf-8").read()
+orig = text
+# Replace get_event_loop() with new_event_loop + set_event_loop
+text = re.sub(r'loop\s*=\s*asyncio\.get_event_loop\(\)', 'loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)', text)
+# Remove occurrences of ", loop=loop" or "loop=loop," or "loop=loop"
+text = re.sub(r',\s*loop\s*=\s*loop', '', text)
+text = re.sub(r'loop\s*=\s*loop\s*,', '', text)
+text = re.sub(r'loop\s*=\s*loop', '', text)
+if text != orig:
+    open(fn, "w", encoding="utf-8").write(text)
+    print("patched")
+else:
+    print("no-change")
+PY
+
+else
+  echo "[*] $MT_BIN not found — will run via python -m if needed."
+fi
+
+# Generate secret (hex 32 chars)
+SECRET_HEX=$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(16))
+PY
+)
+echo "[*] secret: $SECRET_HEX"
+
+# Start proxy:
+# Preferred: use binary in ~/.local/bin if present (it expects args: <PORT> <SECRET>)
+# Fallback: python3 -m mtprotoproxy.mtprotoproxy <PORT> <SECRET> after setting PYTHONPATH
+if [ -x "$MT_BIN" ]; then
+  echo "[*] Launching mtprotoproxy binary..."
+  nohup "$MT_BIN" "${PORT}" "${SECRET_HEX}" > "$LOGFILE" 2>&1 &
+else
+  # ensure user site is in PYTHONPATH
+  USER_SITE=$(python3 -c "import site; print(site.getusersitepackages())")
+  export PYTHONPATH="${USER_SITE}:${PYTHONPATH:-}"
+  echo "[*] Launching mtprotoproxy using python -m ..."
+  nohup python3 -m mtprotoproxy.mtprotoproxy "${PORT}" "${SECRET_HEX}" > "$LOGFILE" 2>&1 &
+fi
+
+# Wait and check
+sleep 2
+PID=$(pgrep -af mtprotoproxy | awk '{print $1}' | head -n1 || true)
+if [ -z "$PID" ]; then
+  echo "ERROR: Service did not start. See last lines of $LOGFILE"
+  echo "---- tail $LOGFILE ----"
+  tail -n 40 "$LOGFILE" || true
+  exit 1
+fi
+
+# Test if port reachable from this host (best-effort)
+PORT_OK=0
 if command -v nc >/dev/null 2>&1; then
-  echo "[*] بررسی دسترسی TCP به ${IP_PUBLIC}:${PORT} با nc ..."
   if nc -vz -w 3 "$IP_PUBLIC" "$PORT" >/dev/null 2>&1; then
     PORT_OK=1
-  else
-    PORT_OK=0
   fi
 else
-  # fallback به تست اتصال با timeout
   (echo > /dev/tcp/"$IP_PUBLIC"/"$PORT") >/dev/null 2>&1 && PORT_OK=1 || PORT_OK=0
 fi
 
-# تولید لینک‌های پیشنهادی (دو نسخه: plain secret و dd-prefixed)
-LINK1="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=${SECRET_HEX}"
-LINK2="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=dd${SECRET_HEX}"
+# Build tg:// links (plain and dd-prefixed)
+LINK_PLAIN="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=${SECRET_HEX}"
+LINK_DD="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=dd${SECRET_HEX}"
 
-# ذخیره خروجی با برچسب اسپانسر
-OUTFILE="mtproxy_${IP_PUBLIC}_${PORT}_configfars.txt"
-{
-  echo "===== MTProto Proxy (sponsored by ${SPONSOR}) ====="
-  echo "IP: ${IP_PUBLIC}"
-  echo "Port: ${PORT}"
-  echo "Secret(hex): ${SECRET_HEX}"
-  echo ""
-  echo "Link (plain):"
-  echo "${LINK1}"
-  echo ""
-  echo "Link (dd-prefixed):"
-  echo "${LINK2}"
-  echo ""
-  echo "Log file: $(pwd)/mtproxy_${PORT}.log"
-  echo ""
-  echo "NOTE: Sponsor: ${SPONSOR}  — this text is added by the setup script."
-  echo "If you want the sponsor to appear to users, include this file or message when sharing the proxy."
-} > "$OUTFILE"
+# Save output file with sponsor note
+cat > "$OUTFILE" <<EOF
+===== MTProto Proxy (sponsored by ${SPONSOR}) =====
+IP: ${IP_PUBLIC}
+Port: ${PORT}
+Secret(hex): ${SECRET_HEX}
 
-# نمایش نتایج
+Link (plain):
+${LINK_PLAIN}
+
+Link (dd-prefixed):
+${LINK_DD}
+
+Log file: $(pwd)/${LOGFILE}
+NOTE: This configuration was created by P_auto.sh — Sponsor: ${SPONSOR}
+EOF
+
+# Print summary
 echo "-----------------------------------------"
-echo "MTProto proxy راه‌اندازی شد."
-echo "آدرس و لینک‌ها در فایل: $OUTFILE"
-echo ""
-echo "---- Summary ----"
+echo "✅ MTProto proxy started (PID: $PID)"
 echo "IP: $IP_PUBLIC"
 echo "Port: $PORT"
 echo "Secret: $SECRET_HEX"
 echo ""
-echo "Link (plain): $LINK1"
-echo "Link (dd-prefixed): $LINK2"
+echo "Link (plain): $LINK_PLAIN"
+echo "Link (dd):    $LINK_DD"
 echo ""
 if [ "$PORT_OK" -eq 1 ]; then
-  echo "[OK] پورت ${PORT} از بیرون قابل دسترسی است."
+  echo "[OK] Port ${PORT} is reachable from this host."
 else
-  echo "[WARN] پورت ${PORT} از بیرون قابل دسترسی نیست. ممکن است فایروال/پنل VPS/ISP مانع شده باشد."
-  echo "در صورت نیاز در پنل VPS پورت را باز کن یا از پورت دیگری استفاده کن."
+  echo "[WARN] Port ${PORT} might not be reachable from outside. Check VPS firewall / provider panel."
 fi
+echo ""
+echo "Config saved to: $OUTFILE"
+echo "Log: $LOGFILE"
+echo "Sponsor tag: $SPONSOR"
 echo "-----------------------------------------"
-
-echo ""
-echo "نکات نهایی:"
-echo "- برای افزودن در تلگرام: Settings → Data and Storage → Proxy → Add Proxy → MTProto و اطلاعات بالا را وارد کن، یا روی لینک کلیک کن."
-echo "- فایل کانفیگ با اسپانسر ذخیره شده: $OUTFILE"
-echo "- لاگ سرویس: mtproxy_${PORT}.log"
-echo ""
-echo "تمام شد — Sponsored by ${SPONSOR}"
