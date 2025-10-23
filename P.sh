@@ -1,123 +1,163 @@
 #!/usr/bin/env bash
-# P_auto.sh - Auto install, patch and run mtprotoproxy (Termux-ready)
-# Usage: chmod +x P_auto.sh && ./P_auto.sh
+# P_auto_fallback.sh
+# Auto install, patch and run mtprotoproxy — try multiple ports and choose first reachable one.
+# Usage: chmod +x P_auto_fallback.sh && ./P_auto_fallback.sh
 set -euo pipefail
 
 # Config
 IP_PUBLIC="188.210.170.57"
-PORT="${1:-8443}"
 SPONSOR="@configfars"
-LOGFILE="mtproxy_${PORT}.log"
-OUTFILE="mtproxy_${IP_PUBLIC}_${PORT}_configfars.txt"
+LOGFILE_BASE="mtproxy"
+OUTFILE_BASE="mtproxy"
+# candidate ports (order matters — first successful will be used)
+PORTS=(8443 443 80 4433 8444 2083 8080)
 
-# Ensure user-local bin in PATH (pip --user installs here)
+# Ensure user-local bin in PATH
 export PATH="$HOME/.local/bin:$PATH"
 
-# Install system packages (Termux-friendly). If already installed, pkg will skip.
-if command -v pkg >/dev/null 2>&1; then
-  echo "[*] Installing required packages (termux): python curl openssl - if not present"
-  pkg update -y >/dev/null 2>&1 || true
-  pkg install -y python curl openssl >/dev/null 2>&1 || true
-else
-  echo "[*] Non-Termux environment detected. Make sure python3, pip3 and curl are installed."
-fi
+# Prechecks
+for cmd in python3 pip3 curl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: نیاز به $cmd است. در ترموکس: pkg install python curl -y"
+    exit 1
+  fi
+done
 
-# Ensure pip3 available
-if ! command -v pip3 >/dev/null 2>&1; then
-  echo "ERROR: pip3 not found. Install pip3 and re-run."
-  exit 1
-fi
-
-# Install mtprotoproxy + pycryptodome to user site if missing
+# Install mtprotoproxy if missing
 if ! python3 -c "import mtprotoproxy" >/dev/null 2>&1; then
   echo "[*] Installing mtprotoproxy and pycryptodome (pip --user)..."
   pip3 install --user mtprotoproxy pycryptodome
-else
-  echo "[*] mtprotoproxy already installed in user site-packages"
 fi
 
 MT_BIN="$HOME/.local/bin/mtprotoproxy"
-
-# If binary exists, backup and patch to be compatible with Python 3.12's asyncio (remove loop=loop usage)
+# If binary exists patch (safe) — same patch routine as before
 if [ -f "$MT_BIN" ]; then
-  echo "[*] Found $MT_BIN — creating backup and applying compatibility patch..."
-  cp -a "$MT_BIN" "${MT_BIN}.bak" || { echo "ERROR: could not create backup ${MT_BIN}.bak"; exit 1; }
-
-  # Run a small python patcher that edits the file in-place
-  python3 - "$MT_BIN" <<'PY'
-import sys, re
-fn = sys.argv[1]
-text = open(fn, "r", encoding="utf-8").read()
-orig = text
-# Replace get_event_loop() with new_event_loop + set_event_loop
-text = re.sub(r'loop\s*=\s*asyncio\.get_event_loop\(\)', 'loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)', text)
-# Remove occurrences of ", loop=loop" or "loop=loop," or "loop=loop"
-text = re.sub(r',\s*loop\s*=\s*loop', '', text)
-text = re.sub(r'loop\s*=\s*loop\s*,', '', text)
-text = re.sub(r'loop\s*=\s*loop', '', text)
-if text != orig:
-    open(fn, "w", encoding="utf-8").write(text)
-    print("patched")
+  cp -a "$MT_BIN" "${MT_BIN}.bak" || true
+  python3 - "$MT_BIN" <<'PY' 2>/dev/null || true
+import sys,re
+fn=sys.argv[1]
+s=open(fn,"r",encoding="utf-8").read()
+orig=s
+s=re.sub(r'loop\s*=\s*asyncio\.get_event_loop\(\)','loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)',s)
+s=re.sub(r',\s*loop\s*=\s*loop','',s)
+s=re.sub(r'loop\s*=\s*loop\s*,','',s)
+s=re.sub(r'loop\s*=\s*loop','',s)
+if s!=orig:
+  open(fn,"w",encoding="utf-8").write(s)
+  print("patched")
 else:
-    print("no-change")
+  print("no-change")
 PY
-
-else
-  echo "[*] $MT_BIN not found — will run via python -m if needed."
 fi
 
-# Generate secret (hex 32 chars)
-SECRET_HEX=$(python3 - <<'PY'
-import secrets
+# helper: generate secret
+generate_secret(){ python3 - <<'PY'
+import secrets,sys
 print(secrets.token_hex(16))
 PY
-)
-echo "[*] secret: $SECRET_HEX"
+}
 
-# Start proxy:
-# Preferred: use binary in ~/.local/bin if present (it expects args: <PORT> <SECRET>)
-# Fallback: python3 -m mtprotoproxy.mtprotoproxy <PORT> <SECRET> after setting PYTHONPATH
-if [ -x "$MT_BIN" ]; then
-  echo "[*] Launching mtprotoproxy binary..."
-  nohup "$MT_BIN" "${PORT}" "${SECRET_HEX}" > "$LOGFILE" 2>&1 &
-else
-  # ensure user site is in PYTHONPATH
-  USER_SITE=$(python3 -c "import site; print(site.getusersitepackages())")
-  export PYTHONPATH="${USER_SITE}:${PYTHONPATH:-}"
-  echo "[*] Launching mtprotoproxy using python -m ..."
-  nohup python3 -m mtprotoproxy.mtprotoproxy "${PORT}" "${SECRET_HEX}" > "$LOGFILE" 2>&1 &
-fi
+# helper: check if port free locally (ss)
+is_port_free_locally(){
+  local p=$1
+  if ss -tuln 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]${p}\$"; then
+    return 1
+  fi
+  return 0
+}
 
-# Wait and check
-sleep 2
-PID=$(pgrep -af mtprotoproxy | awk '{print $1}' | head -n1 || true)
-if [ -z "$PID" ]; then
-  echo "ERROR: Service did not start. See last lines of $LOGFILE"
-  echo "---- tail $LOGFILE ----"
-  tail -n 40 "$LOGFILE" || true
+# helper: try connect to IP:PORT (nc preferred)
+try_connect_ip_port(){
+  local ip=$1; local port=$2
+  if command -v nc >/dev/null 2>&1; then
+    nc -vz -w 3 "$ip" "$port" >/dev/null 2>&1 && return 0 || return 1
+  else
+    (echo > /dev/tcp/"$ip"/"$port") >/dev/null 2>&1 && return 0 || return 1
+  fi
+}
+
+# Run loop through ports
+SELECTED_PORT=""
+SELECTED_SECRET=""
+SELECTED_PID=""
+for P in "${PORTS[@]}"; do
+  echo "--------------------------------"
+  echo "[*] Trying port: $P"
+
+  # if P < 1024 and not root, skip with warning
+  if [ "$P" -lt 1024 ] && [ "$(id -u)" -ne 0 ]; then
+    echo "[!]
+    Port $P < 1024 requires root privileges to bind. Skipping (not root)."
+    continue
+  fi
+
+  # check local free
+  if ! is_port_free_locally "$P"; then
+    echo "[!] Local port $P is already in use — skipping."
+    continue
+  fi
+
+  # generate secret for trial
+  SECRET=$(generate_secret)
+  LOGFILE="${LOGFILE_BASE}_${P}.log"
+
+  # launch proxy: if mtprotoproxy binary exists use it (args: <PORT> <SECRET>), else python -m
+  if [ -x "$MT_BIN" ]; then
+    nohup "$MT_BIN" "${P}" "${SECRET}" > "$LOGFILE" 2>&1 &
+  else
+    USER_SITE=$(python3 -c "import site; print(site.getusersitepackages())")
+    export PYTHONPATH="${USER_SITE}:${PYTHONPATH:-}"
+    nohup python3 -m mtprotoproxy.mtprotoproxy "${P}" "${SECRET}" > "$LOGFILE" 2>&1 &
+  fi
+
+  sleep 2
+
+  # find PID of the just started mtprotoproxy for this port (best-effort)
+  PID=$(pgrep -af mtprotoproxy | grep -E "${P}" | awk '{print $1}' | head -n1 || true)
+  if [ -z "$PID" ]; then
+    echo "[!] Process didn't start on port $P. See $LOGFILE"
+    tail -n 10 "$LOGFILE" || true
+    # ensure killed any leftover
+    sleep 1
+    pkill -f "mtprotoproxy .*${P}" || true
+    continue
+  fi
+
+  echo "[*] Started mtprotoproxy (PID: $PID) on local port $P; testing external reachability..."
+
+  # try connecting to the public IP: if NAT/firewall allows, this should succeed (best-effort)
+  if try_connect_ip_port "$IP_PUBLIC" "$P"; then
+    echo "[OK] Port $P reachable from this host via $IP_PUBLIC:$P"
+    SELECTED_PORT="$P"
+    SELECTED_SECRET="$SECRET"
+    SELECTED_PID="$PID"
+    break
+  else
+    echo "[WARN] Port $P not reachable via $IP_PUBLIC:$P — stopping this instance and trying next port."
+    # kill this trial instance
+    kill "$PID" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -f "mtprotoproxy .*${P}" || true
+    continue
+  fi
+done
+
+if [ -z "$SELECTED_PORT" ]; then
+  echo "ERROR: نتوانستم پورتی پیدا کنم که هم اجرا شود و هم از طریق IP عمومی قابل دسترسی باشد."
+  echo "لطفاً در پنل VPS پورت‌ها را باز کن یا اجرای اسکریپت را به‌صورت روت انجام بده تا پورت‌های <1024 تست شوند."
   exit 1
 fi
 
-# Test if port reachable from this host (best-effort)
-PORT_OK=0
-if command -v nc >/dev/null 2>&1; then
-  if nc -vz -w 3 "$IP_PUBLIC" "$PORT" >/dev/null 2>&1; then
-    PORT_OK=1
-  fi
-else
-  (echo > /dev/tcp/"$IP_PUBLIC"/"$PORT") >/dev/null 2>&1 && PORT_OK=1 || PORT_OK=0
-fi
+# Build links and save config
+LINK_PLAIN="tg://proxy?server=${IP_PUBLIC}&port=${SELECTED_PORT}&secret=${SELECTED_SECRET}"
+LINK_DD="tg://proxy?server=${IP_PUBLIC}&port=${SELECTED_PORT}&secret=dd${SELECTED_SECRET}"
+OUTFILE="${OUTFILE_BASE}_${IP_PUBLIC}_${SELECTED_PORT}_configfars.txt"
 
-# Build tg:// links (plain and dd-prefixed)
-LINK_PLAIN="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=${SECRET_HEX}"
-LINK_DD="tg://proxy?server=${IP_PUBLIC}&port=${PORT}&secret=dd${SECRET_HEX}"
-
-# Save output file with sponsor note
 cat > "$OUTFILE" <<EOF
 ===== MTProto Proxy (sponsored by ${SPONSOR}) =====
 IP: ${IP_PUBLIC}
-Port: ${PORT}
-Secret(hex): ${SECRET_HEX}
+Port: ${SELECTED_PORT}
+Secret(hex): ${SELECTED_SECRET}
 
 Link (plain):
 ${LINK_PLAIN}
@@ -125,27 +165,18 @@ ${LINK_PLAIN}
 Link (dd-prefixed):
 ${LINK_DD}
 
-Log file: $(pwd)/${LOGFILE}
-NOTE: This configuration was created by P_auto.sh — Sponsor: ${SPONSOR}
+Log file: $(pwd)/${LOGFILE_BASE}_${SELECTED_PORT}.log
+NOTE: Sponsor: ${SPONSOR}
 EOF
 
-# Print summary
 echo "-----------------------------------------"
-echo "✅ MTProto proxy started (PID: $PID)"
-echo "IP: $IP_PUBLIC"
-echo "Port: $PORT"
-echo "Secret: $SECRET_HEX"
-echo ""
+echo "✅ Selected port: $SELECTED_PORT (PID: $SELECTED_PID)"
 echo "Link (plain): $LINK_PLAIN"
 echo "Link (dd):    $LINK_DD"
 echo ""
-if [ "$PORT_OK" -eq 1 ]; then
-  echo "[OK] Port ${PORT} is reachable from this host."
-else
-  echo "[WARN] Port ${PORT} might not be reachable from outside. Check VPS firewall / provider panel."
-fi
-echo ""
 echo "Config saved to: $OUTFILE"
-echo "Log: $LOGFILE"
-echo "Sponsor tag: $SPONSOR"
+echo "Log file: ${LOGFILE_BASE}_${SELECTED_PORT}.log"
+echo "If the port selected isn't reachable from your client, check VPS firewall / provider panel."
 echo "-----------------------------------------"
+
+exit 0
